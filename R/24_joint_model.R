@@ -29,6 +29,12 @@ d <- img_data(); ev0 <- load_derived("events") |> filter(!is.na(edu_bl)) |>
 ctrl <- if (isTRUE(cfg$fast) || is.null(cfg$jm24_iter)) list(n_iter = cfg$jm_iter, n_burnin = cfg$jm_burnin, n_chains = 3L, cores = 1L) else
   list(n_iter = cfg$jm24_iter, n_burnin = cfg$jm24_burnin, n_thin = cfg$jm24_thin, n_chains = 3L,
        cores = max(1L, min(3L, as.integer(cfg$jm_cores), parallel::detectCores() - 1L)))
+# Joint-model fits with long chains are large; R's default vector-memory ceiling on macOS
+# (24 GB here) was hit while summarising them. cfg$jm_max_vsize_gb raises it (swap is used beyond RAM).
+if (!is.null(cfg$jm_max_vsize_gb) && exists("mem.maxVSize")) {
+  old_v <- mem.maxVSize(); new_v <- mem.maxVSize(cfg$jm_max_vsize_gb * 1024)
+  lp_log("  vector memory limit: ", round(old_v / 1024), " GB -> ", round(new_v / 1024), " GB")
+}
 lp_log("  JMbayes2 control: ", paste(names(ctrl), unlist(ctrl), sep = "=", collapse = ", "))
 
 prep <- function(markers, tcol = "t_event") {
@@ -42,7 +48,9 @@ prep <- function(markers, tcol = "t_event") {
 fit_lme <- function(dl, mz) nlme::lme(as.formula(paste(mz, "~ time + female + age_bl_c")), random = ~ time | id,
                                       data = dl, control = nlme::lmeControl(opt = "optim"), na.action = na.omit)
 fit_cox <- function(ev) survival::coxph(survival::Surv(t_jm, event) ~ female + age_bl_c + edu_bl, data = ev, x = TRUE)
-jm_tab <- function(j, label, dat) {
+jm_tab <- function(j, label, dat) tryCatch(jm_tab_(j, label, dat), error = function(e) {
+  lp_log("  FAILED summarising ", label, ": ", conditionMessage(e)); NULL })
+jm_tab_ <- function(j, label, dat) {
   s <- summary(j)
   sv <- as.data.frame(s$Survival); sv$term <- rownames(sv)
   lg <- bind_rows(lapply(seq_along(s$Outcomes), function(k) { o <- as.data.frame(s$Outcomes[[k]]); o$term <- paste0("long", k, ": ", rownames(o)); o }))
@@ -60,7 +68,7 @@ jm_fit <- function(label, name, expr) {
   f <- file.path(cfg$dir_derived, paste0(name, ".rds"))
   if (isTRUE(cfg$jm24_reuse) && file.exists(f)) {
     lp_log("  ", label, ": reusing saved fit ", name, " (", format(file.mtime(f), "%Y-%m-%d %H:%M"), ")")
-    return(readRDS(f))
+    return(tryCatch(readRDS(f), error = function(e) { lp_log("  FAILED reading ", name, ": ", conditionMessage(e)); NULL }))
   }
   j <- try_fit(label, expr)
   if (!is.null(j)) save_derived(j, name)

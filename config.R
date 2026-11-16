@@ -106,6 +106,7 @@ cfg <- list(
   jm24_thin_J3    = 10L,      # J3 (two markers) hit the 24 GB vector limit at thin 5, 2026-11-15
   jm24_models     = NULL,     # NULL = all of J1, J2, J3, J4, naive; or e.g. c("J3") to refit one and merge
   jm24_reuse      = FALSE,    # TRUE: rebuild 24's tables from the fits saved in dir_derived instead of refitting
+  jm_max_vsize_gb = 64,       # R vector-memory ceiling for module 24 (macOS default 24 GB was too small for 20,000-iteration fits)
   jm_cores        = 1L,       # chains in sequence: parallel chains (3) ran 16x slower on the Mac (memory), 2026-11-15
   mi_m            = 20L,      # imputations in 26_missing_data
   delta_grid      = c(0, -0.1, -0.2, -0.3, -0.5),  # MNAR shifts, SD units
