@@ -1,0 +1,12 @@
+# R session artifacts: a saved workspace (.RData) holds participant-level data
+.Rhistory
+.Rapp.history
+.RData
+**/.RData
+.DS_Store
+*.Rproj.user
+
+# Participant-level panels and fitted models live in dir_derived, outside the repository
+*.rds
+output/
+output_mock/
