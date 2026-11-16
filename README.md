@@ -10,7 +10,7 @@ joint models and missing-data sensitivity).
 ## Run
 
 ```r
-setwd("path/to/abcd-longitudinal")   # set dir_data and dir_derived in config.R first
+setwd("path/to/longitudinal-analyses-abcd")   # set dir_data and dir_derived in config.R first
 source("run_all.R")          # real data: NBDCtools + NBDCtoolsData >= 5.0.0
 source("tests/run_mock.R")   # simulated data, no ABCD files needed
 ```
