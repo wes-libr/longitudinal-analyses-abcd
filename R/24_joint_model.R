@@ -55,31 +55,43 @@ jm_tab <- function(j, label, dat) {
       tb })()
 }
 res <- list()
+# Which variants to fit: cfg$jm24_models (default all). A subset is merged into the existing
+# 24_joint_models.csv, so a single failed variant can be refit without rerunning the others.
+run_m <- if (is.null(cfg$jm24_models)) c("J1", "J2", "J3", "J4", "naive") else cfg$jm24_models
+lp_log("  variants: ", paste(run_m, collapse = ", "))
 m1 <- cfg$primary; mz <- paste0(m1, "_z")
 P <- prep(m1)
 lme1 <- try_fit("lme", fit_lme(P$dl, mz)); cox1 <- try_fit("cox", fit_cox(P$ev))
-if (!is.null(lme1) && !is.null(cox1)) {
+if (!is.null(lme1) && !is.null(cox1) && "J1" %in% run_m) {
   j1 <- try_fit("J1 value", JMbayes2::jm(cox1, lme1, time_var = "time", data_Surv = P$ev, id_var = "id", control = ctrl))
   if (!is.null(j1)) { res$J1 <- jm_tab(j1, "J1_value", P); save_derived(j1, "jm_J1") }
+  rm(j1); invisible(gc())
+}
+if (!is.null(lme1) && !is.null(cox1) && "J2" %in% run_m) {
   ff <- as.formula(paste0("~ value(", mz, ") + slope(", mz, ")"))
   j2 <- try_fit("J2 value+slope", JMbayes2::jm(cox1, lme1, time_var = "time", functional_forms = ff, data_Surv = P$ev, id_var = "id", control = ctrl))
   if (!is.null(j2)) { res$J2 <- jm_tab(j2, "J2_value_slope", P); save_derived(j2, "jm_J2") }
+  rm(j2); invisible(gc())
 }
 # J3 multivariate
 mm <- intersect(cfg$joint_multi, names(cfg$brain))
-if (length(mm) >= 2) {
+if (length(mm) >= 2 && "J3" %in% run_m) {
   P3 <- prep(mm)
   lmes <- lapply(paste0(mm, "_z"), function(v) try_fit(paste("lme", v), fit_lme(P3$dl, v)))
   cox3 <- try_fit("cox (J3)", fit_cox(P3$ev))
   if (all(!vapply(lmes, is.null, logical(1))) && !is.null(cox3)) {
-    j3 <- try_fit("J3 multivariate", JMbayes2::jm(cox3, lmes, time_var = "time", data_Surv = P3$ev, id_var = "id", control = ctrl))
+    # J3 has two markers and roughly twice the memory per draw: thin harder (24 GB limit hit at thin = 5, 2026-11-15)
+    ctrl3 <- ctrl; if (!is.null(ctrl3$n_thin) && !is.null(cfg$jm24_thin_J3)) ctrl3$n_thin <- cfg$jm24_thin_J3
+    lp_log("  J3 n_thin = ", if (is.null(ctrl3$n_thin)) "default" else ctrl3$n_thin)
+    j3 <- try_fit("J3 multivariate", JMbayes2::jm(cox3, lmes, time_var = "time", data_Surv = P3$ev, id_var = "id", control = ctrl3))
     if (!is.null(j3)) { res$J3 <- jm_tab(j3, "J3_multivariate_value", P3); save_derived(j3, "jm_J3") }
+    rm(j3); invisible(gc())
   }
 }
 # J4 midpoint onset
 P4 <- prep(m1, "t_mid")
 lme4_ <- try_fit("lme (J4)", fit_lme(P4$dl, mz)); cox4 <- try_fit("cox (J4)", fit_cox(P4$ev))
-if (!is.null(lme4_) && !is.null(cox4)) {
+if (!is.null(lme4_) && !is.null(cox4) && "J4" %in% run_m) {
   j4 <- try_fit("J4 midpoint", JMbayes2::jm(cox4, lme4_, time_var = "time", data_Surv = P4$ev, id_var = "id", control = ctrl))
   if (!is.null(j4)) res$J4 <- jm_tab(j4, "J4_value_midpoint_onset", P4)
 }
@@ -87,10 +99,17 @@ if (!is.null(lme4_) && !is.null(cox4)) {
 base <- P$ev |> select(id, fam, female, age_bl_c, edu_bl, t_jm, event)
 tm <- survival::tmerge(base, base, id = id, onset = event(t_jm, event))
 tm <- survival::tmerge(tm, P$dl |> select(id, time, mk = all_of(mz)), id = id, mk = tdc(time, mk))
-nv <- try_fit("naive TV Cox", survival::coxph(survival::Surv(tstart, tstop, onset) ~ mk + female + age_bl_c + edu_bl, data = tm, cluster = fam))
+nv <- if (!"naive" %in% run_m) NULL else try_fit("naive TV Cox", survival::coxph(survival::Surv(tstart, tstop, onset) ~ mk + female + age_bl_c + edu_bl, data = tm, cluster = fam))
 if (!is.null(nv)) res$naive <- broom::tidy(nv, conf.int = TRUE) |>
   transmute(module = "24", model = "naive_tv_cox_locf", term = ifelse(term == "mk", paste0("value(", mz, ")"), term),
             estimate, sd = std.error, conf.low, conf.high, p.value, n_id = nrow(base), n_events = sum(base$event))
 out <- bind_rows(res) |> mutate(scale = "log hazard ratio per baseline SD of the marker (association rows)")
+old_f <- file.path(cfg$dir_output, "24_joint_models.csv")
+if (!setequal(run_m, c("J1", "J2", "J3", "J4", "naive")) && file.exists(old_f)) {
+  old <- readr::read_csv(old_f, show_col_types = FALSE, col_types = readr::cols(.default = "c"))
+  keep <- old |> filter(!model %in% unique(out$model))
+  lp_log("  merging with existing 24_joint_models.csv: kept ", paste(unique(keep$model), collapse = ", "))
+  out <- bind_rows(readr::type_convert(keep, col_types = readr::cols()), out |> mutate(module = as.character(module)))
+}
 safe_write_csv(out, "24_joint_models", count_cols = c("n_id", "n_events"))
 if (nrow(out)) key_write(out |> filter(grepl("value\\(|slope\\(", term)) |> select(model, term, estimate, conf.low, conf.high, p.value, any_of("Rhat"), n_id, n_events), "24")
